@@ -7,3 +7,6 @@ It is a separate server program and is not bundled into the iOS application.
 Keep dependency notices from node_modules when distributing the server. When operating a modified relay, make the corresponding server source available as required by its license. No third-party TikTok connector is copied into www/ or the iOS bundle.
 
 The original shared parser answer-comments.cjs is separately licensed under MIT as stated in that file, and is also bundled in the app as kb29_live_answers.js.
+
+
+Firebase Admin SDK (firebase-admin 13.10.0), Apache-2.0. Its licenses and transitive notices remain in the installed packages.

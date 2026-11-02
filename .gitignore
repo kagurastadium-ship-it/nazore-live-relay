@@ -1,3 +1,7 @@
 node_modules/
 .env
 .env.*
+secrets/
+firebase-auth-verifier.json
+*service-account*.json
+*credential*.json

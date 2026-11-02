@@ -1,33 +1,17 @@
-# Nazore LIVE Relay
+# Nazore LIVE Relay — protocol 2
 
-TikTok LIVE comments relay for Nazore.
+Based on the deployed Nazore/KanjiBunkai relay (AGPL-3.0-only).
+The upstream relay/comment parsing implementation is preserved.
 
-Based on the KanjiBunkai LIVE relay.
-The original documentation is retained in UPSTREAM_README.md.
+This candidate requires Firebase Authentication + App Check + server-side session ACLs.
+Unauthenticated protocol-1 clients are intentionally rejected; no insecure fallback exists.
+The Web project includes the corresponding minimal client transport update.
 
-## Protocol
+See DEPLOYMENT.md for credentials, grants, migration and rollback requirements.
+No deployment, push or Firebase setting change is performed by this source preparation.
 
-WebSocket endpoint: /live
-Health endpoint: /health
-
-Subscribe for Nazore:
-
-{"type":"subscribe","tiktokId":"alice","subscriptionId":"uuid","commentMode":"words"}
-
-The words mode allows multi-character comments.
-The default kanji mode retains the original filtering behavior.
-
-The game client decides whether a comment is a correct answer.
-
-## Deployment
-
-Render service name: nazore-live
-Plan: free
-Automatic deployment: disabled
-
-No production deployment is performed by this repository setup.
-
-## License
-
-The inherited relay source retains its AGPL license.
-See LICENSE and THIRD_PARTY_NOTICES.md.
+- `npm ci --ignore-scripts` and `npm test`: isolated server verification.
+- `npm start`: requires production verifier credentials and explicit grants.
+- `/health`: public static protocol/authentication metadata, no user/session data.
+- `/source`: bounded AGPL source offer; no environment values or secret files.
+- `/live`: WebSocket only; no SSE or HTTP session-control bypass.

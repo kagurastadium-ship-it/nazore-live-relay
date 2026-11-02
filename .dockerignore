@@ -1,2 +1,8 @@
+.git
 node_modules
-.env*
+.env
+.env.*
+secrets
+firebase-auth-verifier.json
+*service-account*.json
+*credential*.json
