@@ -7,8 +7,11 @@ import {createRelay} from './relay.mjs';
 import {createAccess,parseGrants,firebaseVerifier} from './access.mjs';
 
 export function createServer({createConnection,verify,grants,origins=new Set(),trustProxy=false,accessOptions={}}){
+ const events=new Set(['LIVE_UPGRADE_ACCEPTED','LIVE_ACCESS_ATTACHED','LIVE_FRAME_RECEIVED','LIVE_AUTH_DENIED','LIVE_CLOSE_REQUESTED','LIVE_FORCE_TERMINATE','LIVE_SOCKET_CLOSED']);
+ let diagnosticAt=0,diagnosticCount=0;
+ const diagnostic=event=>{if(!events.has(event))return;const at=Date.now();if(at-diagnosticAt>=60000){diagnosticAt=at;diagnosticCount=0}if(diagnosticCount++<32)console.info(event)};
  const relay=createRelay({createConnection,onDiagnostic:()=>console.warn('LIVE_UPSTREAM_FAILURE')});
- const access=createAccess({relay,verify,grants,...accessOptions});
+ const access=createAccess({relay,verify,grants,...accessOptions,onDiagnostic:diagnostic});
  const sourceFiles=['answer-comments.cjs','relay.mjs','access.mjs','server.mjs','relay.test.mjs','access.test.mjs','credentials.test.mjs','firebase-offline.test.mjs','server.test.mjs','DEPLOYMENT.md','render.yaml','package.json','package-lock.json','Dockerfile','README.md','LICENSE','THIRD_PARTY_NOTICES.md'];
  const server=http.createServer((req,res)=>{
   res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Cache-Control','no-store');
@@ -23,7 +26,7 @@ export function createServer({createConnection,verify,grants,origins=new Set(),t
  server.on('upgrade',(req,socket,head)=>{
   const origin=req.headers.origin;
   if(req.url!=='/live'||(origin&&!origins.has(origin))){socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');return}
-  sockets.handleUpgrade(req,socket,head,ws=>{const forwarded=trustProxy&&String(req.headers['x-forwarded-for']||'').split(',').at(-1).trim();access.attach(ws,{ip:forwarded||req.socket.remoteAddress||'unknown'})});
+  sockets.handleUpgrade(req,socket,head,ws=>{diagnostic('LIVE_UPGRADE_ACCEPTED');const forwarded=trustProxy&&String(req.headers['x-forwarded-for']||'').split(',').at(-1).trim();access.attach(ws,{ip:forwarded||req.socket.remoteAddress||'unknown'})});
  });
  const close=()=>{access.close();relay.close();sockets.close();server.close()};
  return {server,close};

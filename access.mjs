@@ -40,7 +40,7 @@ export function credentialVerifier({auth,appCheck,appIds,checkRevoked=true}){
 }
 
 // Tokens exist only inside the first WebSocket frame and verifier call, never URLs/logs.
-export function createAccess({relay,verify,grants,now=Date.now,uuid=randomUUID,setTimer=setTimeout,clearTimer=clearTimeout,sessionMs=300000,reconnectMs=15000,maxClients=128,maxPending=32,maxPerUid=3}){
+export function createAccess({relay,verify,grants,now=Date.now,uuid=randomUUID,setTimer=setTimeout,clearTimer=clearTimeout,sessionMs=300000,reconnectMs=15000,maxClients=128,maxPending=32,maxPerUid=3,onDiagnostic=()=>{}}){
   const clients=new Set(),sessions=new Map(),owners=new Map(),uidCounts=new Map(),ipWindows=new Map();let closed=false;
   const timer=(fn,ms)=>{const id=setTimer(fn,ms);id?.unref?.();return id};
   const salt=randomBytes(32),purge=()=>{for(const[k,v]of ipWindows)if(now()-v.at>=60000)ipWindows.delete(k)};
@@ -48,10 +48,10 @@ export function createAccess({relay,verify,grants,now=Date.now,uuid=randomUUID,s
   const rate=(value,limit)=>{const key=createHmac('sha256',salt).update(value).digest('hex'),at=now();let row=ipWindows.get(key);if(!row||at-row.at>=60000){purge();if(!ipWindows.has(key)&&ipWindows.size>=2048)return false;row={at,count:0};ipWindows.set(key,row)}return ++row.count<=limit};
   const closingSockets=new WeakSet();
   const closeSocket=(socket,code,reason)=>{
-    if(closingSockets.has(socket))return;closingSockets.add(socket);
-    let timeout;const finish=()=>{if(timeout!==undefined)clearTimer(timeout)};socket.once('close',finish);
+    if(closingSockets.has(socket))return;closingSockets.add(socket);onDiagnostic('LIVE_CLOSE_REQUESTED');
+    let timeout;const finish=()=>{onDiagnostic('LIVE_SOCKET_CLOSED');if(timeout!==undefined)clearTimer(timeout)};socket.once('close',finish);
     try{socket.close(code,reason)}catch{socket.terminate?.()}
-    if(socket.readyState!==3)timeout=timer(()=>{socket.removeListener('close',finish);socket.terminate?.()},1000);
+    if(socket.readyState!==3)timeout=timer(()=>{socket.removeListener('close',finish);onDiagnostic('LIVE_FORCE_TERMINATE');socket.terminate?.()},1000);
     else socket.removeListener('close',finish);
   };
   const closeClient=(client,code,reason)=>{dispose(client);closeSocket(client.socket,code,reason)};
@@ -66,14 +66,15 @@ export function createAccess({relay,verify,grants,now=Date.now,uuid=randomUUID,s
     if(!s.owners.size&&!s.closed&&!s.grace)s.grace=timer(()=>endSession(s,s.expiresAt<=now()?4001:1008),Math.min(reconnectMs,Math.max(1,s.expiresAt-now())));
   };
   function attach(socket,{ip='unknown'}={}){
+    onDiagnostic('LIVE_ACCESS_ATTACHED');
     socket.on('error',()=>{});
     if(closed||clients.size>=maxClients||[...clients].filter(c=>!c.uid).length>=maxPending||!rate('connect:'+ip,60)){closeSocket(socket,1013,'capacity');return}
     const c={socket,uid:null,session:null,proxy:null,disposed:false,verifying:false,messages:0,window:now()};clients.add(c);
-    const deny=()=>closeClient(c,1008,'not authorized');
+    const deny=()=>{onDiagnostic('LIVE_AUTH_DENIED');closeClient(c,1008,'not authorized')};
     c.deadline=timer(deny,10000);socket.on('close',()=>dispose(c));socket.on('error',()=>closeClient(c,1011,'transport error'));
     socket.on('message',async(bytes,binary=false)=>{
       try{
-        if(c.disposed)return;if(binary||bytes.length>20000){deny();return}
+        if(c.disposed)return;onDiagnostic('LIVE_FRAME_RECEIVED');if(binary||bytes.length>20000){deny();return}
         const at=now();if(at-c.window>=10000){c.window=at;c.messages=0}if(++c.messages>24){closeClient(c,1013,'rate limit');return}
         let data;try{data=JSON.parse(String(bytes))}catch{deny();return}
         if(!c.uid){
