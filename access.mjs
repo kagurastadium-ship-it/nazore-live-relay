@@ -46,9 +46,18 @@ export function createAccess({relay,verify,grants,now=Date.now,uuid=randomUUID,s
   const salt=randomBytes(32),purge=()=>{for(const[k,v]of ipWindows)if(now()-v.at>=60000)ipWindows.delete(k)};
   let sweep;const sweepRates=()=>{purge();sweep=timer(sweepRates,60000)};sweep=timer(sweepRates,60000);
   const rate=(value,limit)=>{const key=createHmac('sha256',salt).update(value).digest('hex'),at=now();let row=ipWindows.get(key);if(!row||at-row.at>=60000){purge();if(!ipWindows.has(key)&&ipWindows.size>=2048)return false;row={at,count:0};ipWindows.set(key,row)}return ++row.count<=limit};
+  const closingSockets=new WeakSet();
+  const closeSocket=(socket,code,reason)=>{
+    if(closingSockets.has(socket))return;closingSockets.add(socket);
+    let timeout;const finish=()=>{if(timeout!==undefined)clearTimer(timeout)};socket.once('close',finish);
+    try{socket.close(code,reason)}catch{socket.terminate?.()}
+    if(socket.readyState!==3)timeout=timer(()=>{socket.removeListener('close',finish);socket.terminate?.()},1000);
+    else socket.removeListener('close',finish);
+  };
+  const closeClient=(client,code,reason)=>{dispose(client);closeSocket(client.socket,code,reason)};
   const endSession=(session,code=1008)=>{
     if(session.closed)return;session.closed=true;clearTimer(session.grace);sessions.delete(session.id);owners.delete(session.key);
-    for(const client of [...session.clients])client.socket.close(code,'session ended');
+    for(const client of [...session.clients])closeClient(client,code,'session ended');
   };
   const dispose=client=>{
     if(client.disposed)return;client.disposed=true;clearTimer(client.deadline);clearTimer(client.expiry);clients.delete(client);client.proxy?.emit('close');
@@ -58,14 +67,14 @@ export function createAccess({relay,verify,grants,now=Date.now,uuid=randomUUID,s
   };
   function attach(socket,{ip='unknown'}={}){
     socket.on('error',()=>{});
-    if(closed||clients.size>=maxClients||[...clients].filter(c=>!c.uid).length>=maxPending||!rate('connect:'+ip,60)){socket.close(1013,'capacity');return}
+    if(closed||clients.size>=maxClients||[...clients].filter(c=>!c.uid).length>=maxPending||!rate('connect:'+ip,60)){closeSocket(socket,1013,'capacity');return}
     const c={socket,uid:null,session:null,proxy:null,disposed:false,verifying:false,messages:0,window:now()};clients.add(c);
-    const deny=()=>socket.close(1008,'not authorized');
-    c.deadline=timer(deny,10000);socket.on('close',()=>dispose(c));socket.on('error',()=>dispose(c));
+    const deny=()=>closeClient(c,1008,'not authorized');
+    c.deadline=timer(deny,10000);socket.on('close',()=>dispose(c));socket.on('error',()=>closeClient(c,1011,'transport error'));
     socket.on('message',async(bytes,binary=false)=>{
       try{
         if(c.disposed)return;if(binary||bytes.length>20000){deny();return}
-        const at=now();if(at-c.window>=10000){c.window=at;c.messages=0}if(++c.messages>24){socket.close(1013,'rate limit');return}
+        const at=now();if(at-c.window>=10000){c.window=at;c.messages=0}if(++c.messages>24){closeClient(c,1013,'rate limit');return}
         let data;try{data=JSON.parse(String(bytes))}catch{deny();return}
         if(!c.uid){
           if(c.verifying||data?.type!=='authorize'||!rate('auth:'+ip,20)){deny();return}c.verifying=true;
@@ -84,11 +93,11 @@ export function createAccess({relay,verify,grants,now=Date.now,uuid=randomUUID,s
             s=sessions.get(data.sessionId);if(!s||s.closed||s.expiresAt<=now()||!s.owners.size||!s.participants.has(identity.uid)||s.target!==target){deny();return}role='participant';
           }else{deny();return}
           c.uid=identity.uid;c.role=role;c.session=s;c.subscriptionId=data.subscriptionId;c.expiresAt=Math.min(identity.expiresAt,s.expiresAt);s.clients.add(c);if(role==='owner')s.owners.add(c);uidCounts.set(c.uid,(uidCounts.get(c.uid)||0)+1);
-          clearTimer(c.deadline);c.deadline=timer(deny,10000);c.expiry=timer(()=>{if(c.expiresAt>=s.expiresAt)endSession(s,4001);else socket.close(4001,'credentials expired')},Math.max(1,c.expiresAt-now()));
-          const proxy=new EventEmitter();Object.defineProperties(proxy,{readyState:{get:()=>socket.readyState},bufferedAmount:{get:()=>socket.bufferedAmount}});proxy.send=payload=>{if(s.closed||s.expiresAt<=now()){endSession(s,4001);return}if(c.expiresAt<=now()){socket.close(4001,'credentials expired');return}socket.send(payload)};proxy.close=(code,reason)=>socket.close(code,reason);c.proxy=proxy;
+          clearTimer(c.deadline);c.deadline=timer(deny,10000);c.expiry=timer(()=>{if(c.expiresAt>=s.expiresAt)endSession(s,4001);else closeClient(c,4001,'credentials expired')},Math.max(1,c.expiresAt-now()));
+          const proxy=new EventEmitter();Object.defineProperties(proxy,{readyState:{get:()=>socket.readyState},bufferedAmount:{get:()=>socket.bufferedAmount}});proxy.send=payload=>{if(s.closed||s.expiresAt<=now()){endSession(s,4001);return}if(c.expiresAt<=now()){closeClient(c,4001,'credentials expired');return}socket.send(payload)};proxy.close=(code,reason)=>closeClient(c,code,reason);c.proxy=proxy;
           socket.send(JSON.stringify({type:'authorized',protocol:2,subscriptionId:c.subscriptionId,sessionId:s.id,role,expiresAt:c.expiresAt}));return;
         }
-        const s=c.session;if(s.closed||s.expiresAt<=now()||c.expiresAt<=now()){socket.close(4001,'credentials expired');return}
+        const s=c.session;if(s.closed||s.expiresAt<=now()||c.expiresAt<=now()){closeClient(c,4001,'credentials expired');return}
         if(bytes.length>2048||data.subscriptionId!==c.subscriptionId){deny();return}
         if(data.type==='subscribe'){
           if(c.subscribed||normalizeId(data.tiktokId)!==s.target||data.commentMode!=='words'){deny();return}
@@ -97,8 +106,8 @@ export function createAccess({relay,verify,grants,now=Date.now,uuid=randomUUID,s
         }else if(data.type==='round'&&c.subscribed)c.proxy.emit('message',Buffer.from(JSON.stringify({type:'round',subscriptionId:c.subscriptionId})));
         else if(data.type==='stop'&&c.role==='owner')endSession(s);
         else deny();
-      }catch{socket.close(1008,'not authorized')}
+      }catch{deny()}
     });
   }
-  return {attach,stats:()=>({clients:clients.size,sessions:sessions.size}),close(){closed=true;clearTimer(sweep);for(const s of [...sessions.values()])endSession(s);for(const c of [...clients])c.socket.close(1001,'shutdown');ipWindows.clear()}};
+  return {attach,stats:()=>({clients:clients.size,sessions:sessions.size}),close(){closed=true;clearTimer(sweep);for(const s of [...sessions.values()])endSession(s);for(const c of [...clients])closeClient(c,1001,'shutdown');ipWindows.clear()}};
 }

@@ -75,3 +75,53 @@ test('a disconnected socket cannot finish delayed authorization or create an orp
 test('authenticated frame floods are bounded and cleaned up',async()=>{
  const f=fixture(),s=await f.authorize();await f.subscribe(s);for(let i=0;i<30&&s.readyState===1;i++)await s.frame({type:'round',subscriptionId:'sub-owner'});assert.equal(s.code,1013);assert.equal(f.access.stats().clients,0);await f.tick(15000);assert.equal(f.access.stats().sessions,0);f.access.close();
 });
+
+test('denied noncooperating transport releases capacity immediately and terminates within one second',async()=>{
+ const f=fixture(),s=f.socket();let terminated=false;
+ s.close=code=>{s.code=code;s.readyState=2};s.terminate=()=>{terminated=true;s.readyState=3;s.emit('close')};
+ await s.frame({type:'subscribe',tiktokId:'broadcast'});
+ assert.equal(s.code,1008);assert.equal(f.access.stats().clients,0);assert.equal(f.upstreams.length,0);
+ await s.frame({type:'authorize',role:'owner',idToken:'owner',appCheckToken:'attested',tiktokId:'broadcast',subscriptionId:'late'});
+ assert.equal(s.sent.length,0);assert.equal(f.access.stats().sessions,0);
+ await f.tick(1000);assert.equal(terminated,true);f.access.close();
+});
+
+function stubborn(s){s.terminations=0;s.closeCalls=0;s.close=code=>{s.closeCalls++;s.code=code;s.readyState=2};s.terminate=()=>{s.terminations++;s.readyState=3;s.emit('close')};return s}
+test('capacity-rejected socket is forcibly terminated without consuming an auth slot',async()=>{
+ const f=fixture({maxClients:0}),s=stubborn(Object.assign(new EventEmitter(),{readyState:1}));f.access.attach(s);
+ assert.equal(s.code,1013);assert.equal(f.access.stats().clients,0);await f.tick(1000);assert.equal(s.terminations,1);f.access.close();
+});
+test('rate limit releases upstream and UID capacity without a close response',async()=>{
+ const f=fixture({maxPerUid:1}),s=stubborn(await f.authorize());await f.subscribe(s);
+ for(let i=0;i<30;i++)await s.frame({type:'round',subscriptionId:'sub-owner'});
+ assert.equal(s.code,1013);assert.equal(s.closeCalls,1);assert.equal(f.access.stats().clients,0);assert.equal(f.upstreams[0].disconnected,true);
+ const next=await f.authorize('owner',{},'another-ip');assert.equal(next.sent[0].type,'authorized');await f.tick(1000);assert.equal(s.terminations,1);f.access.close();
+});
+test('session expiry disposes every stubborn member and upstream immediately',async()=>{
+ const f=fixture({sessionMs:100}),owner=stubborn(await f.authorize());await f.subscribe(owner);
+ const member=stubborn(await f.authorize('member',{role:'participant',sessionId:owner.sent[0].sessionId}));await f.subscribe(member);
+ await f.tick(100);assert.deepEqual(f.access.stats(),{clients:0,sessions:0});assert.equal(owner.code,4001);assert.equal(member.code,4001);assert.equal(f.upstreams[0].disconnected,true);
+ await f.tick(1000);assert.equal(owner.terminations,1);assert.equal(member.terminations,1);f.access.close();
+});
+test('owner stop releases all stubborn members; later frames cannot recreate sessions',async()=>{
+ const f=fixture(),owner=stubborn(await f.authorize());await f.subscribe(owner);
+ const member=stubborn(await f.authorize('member',{role:'participant',sessionId:owner.sent[0].sessionId}));await f.subscribe(member);
+ await owner.frame({type:'stop',subscriptionId:'sub-owner'});assert.deepEqual(f.access.stats(),{clients:0,sessions:0});assert.equal(f.upstreams[0].disconnected,true);
+ await member.frame({type:'round',subscriptionId:'sub-member'});assert.equal(f.upstreams.length,1);await f.tick(1000);assert.equal(owner.terminations,1);assert.equal(member.terminations,1);f.access.close();
+});
+test('shutdown releases authenticated and pending stubborn clients without close events',async()=>{
+ const f=fixture(),owner=stubborn(await f.authorize());await f.subscribe(owner);const pending=stubborn(f.socket('pending'));
+ f.access.close();await f.settle();assert.deepEqual(f.access.stats(),{clients:0,sessions:0});assert.equal(f.upstreams[0].disconnected,true);assert.equal(pending.code,1001);
+ f.access.close();await f.tick(1000);assert.equal(owner.terminations,1);assert.equal(pending.terminations,1);
+});
+
+test('individual credential expiry removes only the expired stubborn participant',async()=>{
+ const f=fixture({verify:async({idToken})=>({uid:idToken,expiresAt:1793600000000+(idToken==='member'?100:10000)})});
+ const owner=await f.authorize();await f.subscribe(owner);const member=stubborn(await f.authorize('member',{role:'participant',sessionId:owner.sent[0].sessionId}));await f.subscribe(member);
+ await f.tick(100);assert.equal(member.code,4001);assert.equal(f.access.stats().clients,1);assert.equal(f.access.stats().sessions,1);assert.equal(owner.readyState,1);assert.notEqual(f.upstreams[0].disconnected,true);
+ await f.tick(1000);assert.equal(member.terminations,1);f.access.close();
+});
+test('transport error disposes and terminates stubborn authenticated socket',async()=>{
+ const f=fixture(),s=stubborn(await f.authorize());await f.subscribe(s);s.emit('error',Error('fixture'));await f.settle();
+ assert.equal(s.code,1011);assert.equal(f.access.stats().clients,0);assert.equal(f.upstreams[0].disconnected,true);await f.tick(1000);assert.equal(s.terminations,1);f.access.close();
+});
