@@ -7,7 +7,7 @@ import {createRelay} from './relay.mjs';
 import {createAccess,parseGrants,firebaseVerifier} from './access.mjs';
 
 export function createServer({createConnection,verify,grants,origins=new Set(),trustProxy=false,accessOptions={}}){
- const events=new Set(['LIVE_UPGRADE_ACCEPTED','LIVE_ACCESS_ATTACHED','LIVE_FRAME_RECEIVED','LIVE_AUTH_DENIED','LIVE_CLOSE_REQUESTED','LIVE_FORCE_TERMINATE','LIVE_SOCKET_CLOSED']);
+ const events=new Set(['LIVE_UPGRADE_ACCEPTED','LIVE_ACCESS_ATTACHED','LIVE_FRAME_RECEIVED','LIVE_AUTH_DENIED','LIVE_CLOSE_REQUESTED','LIVE_FORCE_TERMINATE','LIVE_SOCKET_CLOSED','LIVE_REJECT_ID_TOKEN','LIVE_REJECT_APP_CHECK','LIVE_REJECT_APP_ID','LIVE_REJECT_OWNER_GRANT','LIVE_REJECT_TARGET_GRANT','LIVE_REJECT_UNCLASSIFIED']);
  let diagnosticAt=0,diagnosticCount=0;
  const diagnostic=event=>{if(!events.has(event))return;const at=Date.now();if(at-diagnosticAt>=60000){diagnosticAt=at;diagnosticCount=0}if(diagnosticCount++<32)console.info(event)};
  const relay=createRelay({createConnection,onDiagnostic:()=>console.warn('LIVE_UPSTREAM_FAILURE')});

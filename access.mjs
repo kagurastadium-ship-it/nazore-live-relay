@@ -4,6 +4,8 @@ import {readFile} from 'node:fs/promises';
 import {randomUUID,randomBytes,createHmac} from 'node:crypto';
 import {normalizeId} from './relay.mjs';
 
+const rejectionStages=new WeakMap();
+const rejectAt=stage=>{const error=Error('unauthenticated');rejectionStages.set(error,stage);return error};
 const validUid=value=>typeof value==='string'&&value.length>0&&value.length<=128&&!/[\s/\u0000-\u001f]/u.test(value);
 export function parseGrants(text){
   let rows;try{rows=JSON.parse(text)}catch{throw Error('LIVE grants are required')}
@@ -33,8 +35,8 @@ export async function firebaseVerifier({projectId,appIds,checkRevoked=true}){
 export function credentialVerifier({auth,appCheck,appIds,checkRevoked=true}){
   return async({idToken,appCheckToken})=>{
     if(typeof idToken!=='string'||idToken.length>8192||typeof appCheckToken!=='string'||appCheckToken.length>8192)throw Error('unauthenticated');
-    const [user,attestation]=await Promise.all([auth.verifyIdToken(idToken,checkRevoked),appCheck.verifyToken(appCheckToken)]);
-    if(!appIds.has(attestation.appId))throw Error('unauthenticated');
+    const [user,attestation]=await Promise.all([Promise.resolve().then(()=>auth.verifyIdToken(idToken,checkRevoked)).catch(()=>{throw rejectAt('LIVE_REJECT_ID_TOKEN')}),Promise.resolve().then(()=>appCheck.verifyToken(appCheckToken)).catch(()=>{throw rejectAt('LIVE_REJECT_APP_CHECK')})]);
+    if(!appIds.has(attestation.appId))throw rejectAt('LIVE_REJECT_APP_ID');
     return {uid:user.uid,expiresAt:Math.min(user.exp,attestation.token.exp)*1000};
   };
 }
@@ -85,7 +87,7 @@ export function createAccess({relay,verify,grants,now=Date.now,uuid=randomUUID,s
           if(!validUid(identity?.uid)||!Number.isFinite(identity.expiresAt)||identity.expiresAt<=now()||!rate('uid:'+identity.uid,30)||(uidCounts.get(identity.uid)||0)>=maxPerUid){deny();return}
           const target=normalizeId(data.tiktokId);let s,role;
           if(data.role==='owner'){
-            const grant=grants.get(identity.uid);if(!grant?.targets.has(target)){deny();return}
+            const grant=grants.get(identity.uid);if(!grant){onDiagnostic('LIVE_REJECT_OWNER_GRANT');deny();return}if(!grant.targets.has(target)){onDiagnostic('LIVE_REJECT_TARGET_GRANT');deny();return}
             const key=identity.uid+'\0'+target;s=owners.get(key);
             if(s&&s.expiresAt<=now()){endSession(s,4001);s=null}
             if(!s){s={id:uuid(),key,owner:identity.uid,target,participants:new Set(grant.participants),clients:new Set(),owners:new Set(),expiresAt:Math.min(identity.expiresAt,now()+sessionMs),closed:false};sessions.set(s.id,s);owners.set(key,s)}
@@ -107,7 +109,7 @@ export function createAccess({relay,verify,grants,now=Date.now,uuid=randomUUID,s
         }else if(data.type==='round'&&c.subscribed)c.proxy.emit('message',Buffer.from(JSON.stringify({type:'round',subscriptionId:c.subscriptionId})));
         else if(data.type==='stop'&&c.role==='owner')endSession(s);
         else deny();
-      }catch{deny()}
+      }catch(error){const stage=rejectionStages.get(error);if(stage)onDiagnostic(stage);else onDiagnostic('LIVE_REJECT_UNCLASSIFIED');deny()}
     });
   }
   return {attach,stats:()=>({clients:clients.size,sessions:sessions.size}),close(){closed=true;clearTimer(sweep);for(const s of [...sessions.values()])endSession(s);for(const c of [...clients])closeClient(c,1001,'shutdown');ipWindows.clear()}};
