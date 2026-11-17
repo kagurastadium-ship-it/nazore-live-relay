@@ -10,7 +10,7 @@ export function createServer({createConnection,verify,grants,origins=new Set(),t
  const events=new Set(['LIVE_UPGRADE_ACCEPTED','LIVE_ACCESS_ATTACHED','LIVE_FRAME_RECEIVED','LIVE_AUTH_DENIED','LIVE_CLOSE_REQUESTED','LIVE_FORCE_TERMINATE','LIVE_SOCKET_CLOSED','LIVE_REJECT_ID_TOKEN','LIVE_REJECT_APP_CHECK','LIVE_REJECT_APP_ID','LIVE_REJECT_OWNER_GRANT','LIVE_REJECT_TARGET_GRANT','LIVE_REJECT_UNCLASSIFIED']);
  let diagnosticAt=0,diagnosticCount=0;
  const diagnostic=event=>{if(!events.has(event))return;const at=Date.now();if(at-diagnosticAt>=60000){diagnosticAt=at;diagnosticCount=0}if(diagnosticCount++<32)console.info(event)};
- const relay=createRelay({createConnection,onDiagnostic:()=>console.warn('LIVE_UPSTREAM_FAILURE')});
+ const relay=createRelay({createConnection,onDiagnostic:diagnostic=>{const kind=['offline','rate-limit','signing','timeout','connection'].includes(diagnostic?.kind)?diagnostic.kind:'connection';console.warn('LIVE_UPSTREAM_FAILURE_'+kind.toUpperCase().replace('-','_'))}});
  const access=createAccess({relay,verify,grants,...accessOptions,onDiagnostic:diagnostic});
  const sourceFiles=['answer-comments.cjs','relay.mjs','access.mjs','server.mjs','relay.test.mjs','access.test.mjs','credentials.test.mjs','firebase-offline.test.mjs','server.test.mjs','DEPLOYMENT.md','render.yaml','package.json','package-lock.json','Dockerfile','README.md','LICENSE','THIRD_PARTY_NOTICES.md'];
  const server=http.createServer((req,res)=>{
